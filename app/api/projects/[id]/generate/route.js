@@ -13,7 +13,7 @@ export async function POST(req, { params }) {
   const project = await getOwnedProject(id, userId);
   if (!project) return Response.json({ error: "Not found" }, { status: 404 });
 
-  const { type, focus } = await req.json();
+  const { type, focus, instructions } = await req.json();
   if (!ALL_TYPES.includes(type)) {
     return Response.json({ error: "Unknown deliverable type" }, { status: 400 });
   }
@@ -22,21 +22,39 @@ export async function POST(req, { params }) {
   const model = process.env.OPENAI_MODEL || "gpt-4o";
   const context = projectContext(project);
 
+  // If the user gave regeneration instructions, include them (plus the
+  // previous version, when available) so the new output incorporates them.
+  let revision = "";
+  const userInstructions = instructions?.trim();
+  if (userInstructions) {
+    let prev = "";
+    try {
+      const { rows } = await sql`
+        SELECT content FROM deliverables WHERE project_id = ${id} AND type = ${type}`;
+      prev = rows[0]?.content || "";
+    } catch {}
+    revision = `\n\nREVISION REQUEST: The homeowner asked you to incorporate the following into this regeneration: "${userInstructions}". Treat this as a priority over any conflicting earlier assumptions.`;
+    if (prev && type !== "budget") {
+      revision += `\n\nPREVIOUS VERSION (revise it per the request above, keeping what still applies):\n${prev.slice(0, 12000)}`;
+    }
+  }
+
   try {
     if (type === "budget") {
-      return await generateBudget(openai, model, context, id);
+      return await generateBudget(openai, model, context, id, revision);
     }
     if (type === "contractors") {
-      return await generateContractors(openai, model, context, id);
+      return await generateContractors(openai, model, context, id, revision);
     }
     if (type === "design") {
-      return await generateDesign(openai, model, context, id, project);
+      return await generateDesign(openai, model, context, id, project, revision, userInstructions);
     }
 
     let userContent = `${context}\n\nTASK:\n${TYPE_PROMPTS[type]}`;
     if (type === "steps") {
       userContent += `\n\nSPECIFIC TASK TO DETAIL: ${focus?.trim() || "the most critical task in this project"}`;
     }
+    userContent += revision;
 
     const completion = await openai.chat.completions.create({
       model,
@@ -59,13 +77,13 @@ export async function POST(req, { params }) {
   }
 }
 
-async function generateBudget(openai, model, context, projectId) {
+async function generateBudget(openai, model, context, projectId, revision = "") {
   const completion = await openai.chat.completions.create({
     model,
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: `${context}\n\nTASK:\n${TYPE_PROMPTS.budget}` },
+      { role: "user", content: `${context}\n\nTASK:\n${TYPE_PROMPTS.budget}${revision}` },
     ],
   });
 
@@ -92,8 +110,8 @@ async function generateBudget(openai, model, context, projectId) {
   return Response.json({ content: "", budgetItems });
 }
 
-async function generateContractors(openai, model, context, projectId) {
-  const input = `${SYSTEM_PROMPT}\n\n${context}\n\nTASK:\n${TYPE_PROMPTS.contractors}`;
+async function generateContractors(openai, model, context, projectId, revision = "") {
+  const input = `${SYSTEM_PROMPT}\n\n${context}\n\nTASK:\n${TYPE_PROMPTS.contractors}${revision}`;
   let content;
   try {
     const response = await openai.responses.create({
@@ -130,19 +148,19 @@ async function generateContractors(openai, model, context, projectId) {
   return Response.json({ content });
 }
 
-async function generateDesign(openai, model, context, projectId, project) {
+async function generateDesign(openai, model, context, projectId, project, revision = "", userInstructions = "") {
   // 1) Written design spec
   const completion = await openai.chat.completions.create({
     model,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: `${context}\n\nTASK:\n${TYPE_PROMPTS.design}` },
+      { role: "user", content: `${context}\n\nTASK:\n${TYPE_PROMPTS.design}${revision}` },
     ],
   });
   const content = completion.choices[0].message.content;
 
   // 2) Photorealistic renders
-  const imagePrompt = `Photorealistic photograph of this completed home improvement project, professionally built, magazine quality, natural lighting: ${project.title}. ${project.description}`.slice(0, 3000);
+  const imagePrompt = `Photorealistic photograph of this completed home improvement project, professionally built, magazine quality, natural lighting: ${project.title}. ${project.description}${userInstructions ? `. Important design direction: ${userInstructions}` : ""}`.slice(0, 3000);
   const images = [];
   try {
     const result = await openai.images.generate({

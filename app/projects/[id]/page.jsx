@@ -151,6 +151,7 @@ function Workspace({ id, data, setData, router }) {
   const [active, setActive] = useState("plans");
   const [generating, setGenerating] = useState({});
   const [stepsFocus, setStepsFocus] = useState(deliverables.steps?.data?.focus || "");
+  const [refine, setRefine] = useState("");
   const [error, setError] = useState("");
 
   const item = getItem(active);
@@ -164,7 +165,11 @@ function Workspace({ id, data, setData, router }) {
       const res = await fetch(`/api/projects/${id}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type, focus: type === "steps" ? stepsFocus : undefined }),
+        body: JSON.stringify({
+          type,
+          focus: type === "steps" ? stepsFocus : undefined,
+          instructions: refine.trim() || undefined,
+        }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "Generation failed.");
@@ -177,6 +182,7 @@ function Workspace({ id, data, setData, router }) {
         budgetItems: d.budgetItems || prev.budgetItems,
       }));
       if (d.warning) setError(d.warning);
+      setRefine("");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -229,7 +235,7 @@ function Workspace({ id, data, setData, router }) {
               {group.items.map((it) => (
                 <button
                   key={it.id}
-                  onClick={() => setActive(it.id)}
+                  onClick={() => { setActive(it.id); setRefine(""); }}
                   className={`flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm ${
                     active === it.id ? "bg-amber-100 font-medium text-amber-900" : "hover:bg-stone-100"
                   }`}
@@ -279,6 +285,22 @@ function Workspace({ id, data, setData, router }) {
                 value={stepsFocus}
                 onChange={(e) => setStepsFocus(e.target.value)}
                 placeholder="e.g., Setting the deck posts, Tiling the shower wall (leave blank for the most critical task)"
+                className="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+          )}
+
+          {isDone(active) && (
+            <div className="no-print mt-4">
+              <label className="block text-sm font-medium">
+                Changes to incorporate when regenerating{" "}
+                <span className="font-normal text-stone-400">(optional)</span>
+              </label>
+              <textarea
+                rows={2}
+                value={refine}
+                onChange={(e) => setRefine(e.target.value)}
+                placeholder="e.g., Use composite decking instead of wood · Keep total under $3,000 · Add a built-in bench · Assume I already own a miter saw"
                 className="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
               />
             </div>
