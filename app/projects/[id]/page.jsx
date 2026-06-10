@@ -154,6 +154,9 @@ function Workspace({ id, data, setData, router }) {
   const [refine, setRefine] = useState("");
   const [error, setError] = useState("");
 
+  const isPostal = /^[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d$/.test((project.zip_code || "").trim());
+  const currency = isPostal ? "CDN$" : "US$";
+
   const item = getItem(active);
   const current = deliverables[active];
   const isDone = (type) => !!data.deliverables[type] || (type === "budget" && budgetItems.length > 0);
@@ -203,7 +206,7 @@ function Workspace({ id, data, setData, router }) {
           <h1 className="text-2xl font-bold">{project.title}</h1>
           <p className="mt-1 max-w-2xl text-sm text-stone-600">{project.description}</p>
           <p className="mt-1 text-xs text-stone-400">
-            {project.zip_code && `ZIP ${project.zip_code} · `}
+            {project.zip_code && `${project.zip_code} (${currency}) · `}
             {project.skill_level && `${project.skill_level} · `}
             {project.budget_range}
           </p>
@@ -316,7 +319,7 @@ function Workspace({ id, data, setData, router }) {
 
           <div className="mt-6">
             {active === "budget" ? (
-              <BudgetTable id={id} items={budgetItems} setData={setData} />
+              <BudgetTable id={id} items={budgetItems} setData={setData} currency={currency} />
             ) : current ? (
               <>
                 {active === "design" && current.data?.images?.length > 0 && (
@@ -352,7 +355,7 @@ function Workspace({ id, data, setData, router }) {
 
 /* ---------------------------- Budget tracker ---------------------------- */
 
-function BudgetTable({ id, items, setData }) {
+function BudgetTable({ id, items, setData, currency = "US$" }) {
   const [rows, setRows] = useState(items);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -378,7 +381,7 @@ function BudgetTable({ id, items, setData }) {
     (t, r) => ({ planned: t.planned + (Number(r.planned) || 0), actual: t.actual + (Number(r.actual) || 0) }),
     { planned: 0, actual: 0 }
   );
-  const fmt = (n) => `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  const fmt = (n) => `${currency}${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
   async function save() {
     setSaving(true);
@@ -406,8 +409,8 @@ function BudgetTable({ id, items, setData }) {
             <tr className="border-b border-stone-200 text-left text-stone-500">
               <th className="py-2 pr-2 font-medium">Item</th>
               <th className="py-2 pr-2 font-medium">Category</th>
-              <th className="py-2 pr-2 font-medium">Planned</th>
-              <th className="py-2 pr-2 font-medium">Actual</th>
+              <th className="py-2 pr-2 font-medium">Planned ({currency})</th>
+              <th className="py-2 pr-2 font-medium">Actual ({currency})</th>
               <th className="no-print" />
             </tr>
           </thead>

@@ -74,11 +74,11 @@ export default function NewProjectPage() {
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="block text-sm font-medium">ZIP code</label>
+            <label className="block text-sm font-medium">ZIP / Postal code</label>
             <input
               value={form.zipCode}
               onChange={set("zipCode")}
-              placeholder="For contractors, pricing & weather"
+              placeholder="e.g., 30309 (US$) or M5V 2T6 (CDN$)"
               className="mt-1 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 focus:border-amber-500 focus:outline-none"
             />
           </div>
