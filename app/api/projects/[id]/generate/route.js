@@ -1,0 +1,178 @@
+import { auth } from "@clerk/nextjs/server";
+import OpenAI from "openai";
+import { sql, getOwnedProject, saveDeliverable } from "@/lib/db";
+import { projectContext, SYSTEM_PROMPT, TYPE_PROMPTS } from "@/lib/prompts";
+import { ALL_TYPES } from "@/lib/catalog";
+
+export const maxDuration = 300;
+
+export async function POST(req, { params }) {
+  const { userId } = await auth();
+  if (!userId) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const { id } = await params;
+  const project = await getOwnedProject(id, userId);
+  if (!project) return Response.json({ error: "Not found" }, { status: 404 });
+
+  const { type, focus } = await req.json();
+  if (!ALL_TYPES.includes(type)) {
+    return Response.json({ error: "Unknown deliverable type" }, { status: 400 });
+  }
+
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const model = process.env.OPENAI_MODEL || "gpt-4o";
+  const context = projectContext(project);
+
+  try {
+    if (type === "budget") {
+      return await generateBudget(openai, model, context, id);
+    }
+    if (type === "contractors") {
+      return await generateContractors(openai, model, context, id);
+    }
+    if (type === "design") {
+      return await generateDesign(openai, model, context, id, project);
+    }
+
+    let userContent = `${context}\n\nTASK:\n${TYPE_PROMPTS[type]}`;
+    if (type === "steps") {
+      userContent += `\n\nSPECIFIC TASK TO DETAIL: ${focus?.trim() || "the most critical task in this project"}`;
+    }
+
+    const completion = await openai.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userContent },
+      ],
+    });
+
+    const content = completion.choices[0].message.content;
+    const data = type === "steps" ? { focus: focus?.trim() || "" } : null;
+    await saveDeliverable(id, type, content, data);
+    return Response.json({ content, data });
+  } catch (err) {
+    console.error(`generate ${type} failed:`, err);
+    return Response.json(
+      { error: err?.message || "Generation failed. Check your OpenAI key and billing, then try again." },
+      { status: 500 }
+    );
+  }
+}
+
+async function generateBudget(openai, model, context, projectId) {
+  const completion = await openai.chat.completions.create({
+    model,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: `${context}\n\nTASK:\n${TYPE_PROMPTS.budget}` },
+    ],
+  });
+
+  let items = [];
+  try {
+    items = JSON.parse(completion.choices[0].message.content).items || [];
+  } catch {
+    throw new Error("Budget generation returned invalid data. Try again.");
+  }
+
+  await sql`DELETE FROM budget_items WHERE project_id = ${projectId}`;
+  for (const item of items) {
+    if (!item.name) continue;
+    await sql`
+      INSERT INTO budget_items (project_id, name, category, planned, actual)
+      VALUES (${projectId}, ${String(item.name)}, ${item.category || "Other"},
+              ${Number(item.planned) || 0}, 0)`;
+  }
+  await saveDeliverable(projectId, "budget", "Budget tracker initialized. Edit amounts in the table.");
+
+  const { rows: budgetItems } = await sql`
+    SELECT id, name, category, planned, actual FROM budget_items
+    WHERE project_id = ${projectId} ORDER BY category, id`;
+  return Response.json({ content: "", budgetItems });
+}
+
+async function generateContractors(openai, model, context, projectId) {
+  const input = `${SYSTEM_PROMPT}\n\n${context}\n\nTASK:\n${TYPE_PROMPTS.contractors}`;
+  let content;
+  try {
+    const response = await openai.responses.create({
+      model,
+      tools: [{ type: "web_search" }],
+      input,
+    });
+    content = response.output_text;
+  } catch (e1) {
+    try {
+      // Older API naming
+      const response = await openai.responses.create({
+        model,
+        tools: [{ type: "web_search_preview" }],
+        input,
+      });
+      content = response.output_text;
+    } catch (e2) {
+      // Fallback: no live search — give guidance + directory links instead
+      const completion = await openai.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: `${context}\n\nTASK:\nWeb search is unavailable. List the trades this project needs, then for each trade provide direct search links the homeowner can click, formatted as Markdown links to Google Maps (https://www.google.com/maps/search/TRADE+near+ZIP), Yelp, and Angi. Include how to vet contractors (license lookup, insurance, quotes) for their state. Start with a note that live search was unavailable.`,
+          },
+        ],
+      });
+      content = completion.choices[0].message.content;
+    }
+  }
+  await saveDeliverable(projectId, "contractors", content);
+  return Response.json({ content });
+}
+
+async function generateDesign(openai, model, context, projectId, project) {
+  // 1) Written design spec
+  const completion = await openai.chat.completions.create({
+    model,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: `${context}\n\nTASK:\n${TYPE_PROMPTS.design}` },
+    ],
+  });
+  const content = completion.choices[0].message.content;
+
+  // 2) Photorealistic renders
+  const imagePrompt = `Photorealistic photograph of this completed home improvement project, professionally built, magazine quality, natural lighting: ${project.title}. ${project.description}`.slice(0, 3000);
+  const images = [];
+  try {
+    const result = await openai.images.generate({
+      model: "gpt-image-1",
+      prompt: imagePrompt,
+      size: "1536x1024",
+      quality: "medium",
+      n: 2,
+    });
+    for (const d of result.data) if (d.b64_json) images.push(d.b64_json);
+  } catch (e1) {
+    try {
+      const result = await openai.images.generate({
+        model: "dall-e-3",
+        prompt: imagePrompt.slice(0, 3900),
+        size: "1792x1024",
+        response_format: "b64_json",
+        n: 1,
+      });
+      for (const d of result.data) if (d.b64_json) images.push(d.b64_json);
+    } catch (e2) {
+      console.error("image generation failed:", e2);
+    }
+  }
+
+  const data = { images };
+  await saveDeliverable(projectId, "design", content, data);
+  return Response.json({
+    content,
+    data,
+    warning: images.length ? null : "Images could not be generated (check that your OpenAI account has image access). The written design spec is ready.",
+  });
+}
