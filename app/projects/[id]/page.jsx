@@ -29,7 +29,7 @@ export default function ProjectPage() {
   if (!data) return <Loading text="Loading project…" />;
 
   if (data.project.status === "clarifying") {
-    return <ClarifyView id={id} project={data.project} onDone={load} />;
+    return <ClarifyView id={id} project={data.project} attachments={data.attachments || []} onDone={load} />;
   }
   return <Workspace id={id} data={data} setData={setData} router={router} />;
 }
@@ -45,32 +45,77 @@ function Loading({ text }) {
 
 /* ------------------------- Clarification step ------------------------- */
 
-function ClarifyView({ id, project, onDone }) {
+function ClarifyView({ id, project, attachments, onDone }) {
   const [questions, setQuestions] = useState(project.clarifications?.questions || null);
   const [answers, setAnswers] = useState({});
+  const [atts, setAtts] = useState(attachments);
+  const [summaries, setSummaries] = useState(() =>
+    Object.fromEntries(attachments.map((a) => [a.id, a.summary || ""]))
+  );
+  const [analyzing, setAnalyzing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const fetched = useRef(false);
 
   useEffect(() => {
-    if (questions || fetched.current) return;
+    if (fetched.current) return;
     fetched.current = true;
-    (async () => {
-      try {
-        const res = await fetch(`/api/projects/${id}/clarify`, { method: "POST" });
-        const d = await res.json();
-        if (!res.ok) throw new Error(d.error || "Failed to generate questions.");
-        setQuestions(d.questions);
-      } catch (err) {
-        setError(err.message);
-      }
-    })();
-  }, [id, questions]);
+
+    if (!questions) {
+      (async () => {
+        try {
+          const res = await fetch(`/api/projects/${id}/clarify`, { method: "POST" });
+          const d = await res.json();
+          if (!res.ok) throw new Error(d.error || "Failed to generate questions.");
+          setQuestions(d.questions);
+        } catch (err) {
+          setError(err.message);
+        }
+      })();
+    }
+
+    // Analyze attachments that don't have a summary yet (runs in parallel).
+    if (attachments.some((a) => !a.summary)) {
+      setAnalyzing(true);
+      (async () => {
+        try {
+          const res = await fetch(`/api/projects/${id}/attachments/analyze`, { method: "POST" });
+          const d = await res.json();
+          if (res.ok && d.attachments) {
+            setAtts((prev) =>
+              prev.map((a) => {
+                const updated = d.attachments.find((u) => u.id === a.id);
+                return updated ? { ...a, summary: updated.summary } : a;
+              })
+            );
+            setSummaries((s) => {
+              const next = { ...s };
+              for (const u of d.attachments) if (!next[u.id]) next[u.id] = u.summary || "";
+              return next;
+            });
+          }
+        } finally {
+          setAnalyzing(false);
+        }
+      })();
+    }
+  }, [id, questions, attachments]);
 
   async function submit(skip = false) {
     setBusy(true);
     setError("");
     try {
+      // Save (possibly edited) attachment summaries first — they feed every deliverable.
+      for (const a of atts) {
+        const text = (summaries[a.id] || "").trim();
+        if (text && text !== (a.summary || "").trim()) {
+          await fetch(`/api/projects/${id}/attachments`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ attachmentId: a.id, summary: text }),
+          });
+        }
+      }
       const payload = skip ? { answers: { skipped: "User chose to skip clarification." } } : { answers };
       const res = await fetch(`/api/projects/${id}`, {
         method: "PATCH",
@@ -107,6 +152,53 @@ function ClarifyView({ id, project, onDone }) {
         A few quick questions to make your plans, estimates, and designs accurate. Answer what you can — skip anything you&apos;re unsure about.
       </p>
 
+      {atts.length > 0 && (
+        <div className="mt-8 space-y-5">
+          <h2 className="text-lg font-semibold">Your attachments</h2>
+          <p className="-mt-3 text-sm text-stone-500">
+            Here&apos;s what the AI found. Correct or add anything — your version takes priority in every deliverable.
+          </p>
+          {atts.map((a) => (
+            <div key={a.id} className="rounded-xl border border-stone-200 bg-white p-4">
+              <div className="flex gap-4">
+                {a.kind === "image" && a.data ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`data:${a.mime};base64,${a.data}`}
+                    alt={a.filename}
+                    className="h-24 w-24 shrink-0 rounded-lg border border-stone-200 object-cover"
+                  />
+                ) : (
+                  <div className="flex h-24 w-24 shrink-0 flex-col items-center justify-center rounded-lg border border-stone-200 bg-stone-50 p-2 text-center">
+                    <span className="text-2xl">{a.kind === "image" ? "🖼" : "📄"}</span>
+                    <span className="mt-1 w-full truncate text-[10px] text-stone-500">{a.filename}</span>
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <label className="block text-sm font-medium">
+                    {a.kind === "image" ? "DIY details from your photo" : `Summary of ${a.filename}`}
+                  </label>
+                  {analyzing && !summaries[a.id] ? (
+                    <p className="mt-2 text-sm text-stone-500">
+                      <span className="mr-2 inline-block h-3 w-3 animate-spin rounded-full border border-stone-400 border-t-transparent align-middle" />
+                      Analyzing…
+                    </p>
+                  ) : (
+                    <textarea
+                      rows={5}
+                      value={summaries[a.id] || ""}
+                      onChange={(e) => setSummaries((s) => ({ ...s, [a.id]: e.target.value }))}
+                      placeholder={analyzing ? "Analyzing…" : "Analysis unavailable — describe the attachment yourself and it will be used in every deliverable."}
+                      className="mt-2 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="mt-8 space-y-6">
         {questions.map((q, i) => (
           <div key={i}>
@@ -127,14 +219,14 @@ function ClarifyView({ id, project, onDone }) {
       <div className="mt-8 flex gap-3">
         <button
           onClick={() => submit(false)}
-          disabled={busy}
+          disabled={busy || analyzing}
           className="flex-1 rounded-lg bg-amber-600 px-5 py-3 font-semibold text-white hover:bg-amber-500 disabled:opacity-50"
         >
-          {busy ? "Saving…" : "Save answers & continue"}
+          {busy ? "Saving…" : analyzing ? "Analyzing attachments…" : "Save answers & continue"}
         </button>
         <button
           onClick={() => submit(true)}
-          disabled={busy}
+          disabled={busy || analyzing}
           className="rounded-lg border border-stone-300 px-5 py-3 text-stone-600 hover:bg-stone-100 disabled:opacity-50"
         >
           Skip
@@ -147,7 +239,7 @@ function ClarifyView({ id, project, onDone }) {
 /* --------------------------- Main workspace --------------------------- */
 
 function Workspace({ id, data, setData, router }) {
-  const { project, deliverables, budgetItems } = data;
+  const { project, deliverables, budgetItems, attachments = [] } = data;
   const [active, setActive] = useState("plans");
   const [generating, setGenerating] = useState({});
   const [stepsFocus, setStepsFocus] = useState(deliverables.steps?.data?.focus || "");
@@ -210,6 +302,30 @@ function Workspace({ id, data, setData, router }) {
             {project.skill_level && `${project.skill_level} · `}
             {project.budget_range}
           </p>
+          {attachments.length > 0 && (
+            <div className="mt-2 flex items-center gap-2">
+              {attachments.map((a) =>
+                a.kind === "image" && a.data ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    key={a.id}
+                    src={`data:${a.mime};base64,${a.data}`}
+                    alt={a.filename}
+                    title={a.summary || a.filename}
+                    className="h-10 w-10 rounded-md border border-stone-200 object-cover"
+                  />
+                ) : (
+                  <span
+                    key={a.id}
+                    title={a.summary || a.filename}
+                    className="inline-flex max-w-40 items-center gap-1 rounded-md border border-stone-200 bg-white px-2 py-1 text-xs text-stone-600"
+                  >
+                    📄 <span className="truncate">{a.filename}</span>
+                  </span>
+                )
+              )}
+            </div>
+          )}
         </div>
         <div className="flex gap-2">
           <button

@@ -1,5 +1,5 @@
 import { auth } from "@clerk/nextjs/server";
-import { sql, getOwnedProject } from "@/lib/db";
+import { sql, getOwnedProject, getAttachments } from "@/lib/db";
 
 export async function GET(req, { params }) {
   const { userId } = await auth();
@@ -17,7 +17,10 @@ export async function GET(req, { params }) {
     SELECT id, name, category, planned, actual FROM budget_items
     WHERE project_id = ${id} ORDER BY category, id`;
 
-  return Response.json({ project, deliverables, budgetItems });
+  // Image data included for thumbnails; document data stays server-side.
+  const attachments = await getAttachments(id);
+
+  return Response.json({ project, deliverables, budgetItems, attachments });
 }
 
 export async function PATCH(req, { params }) {

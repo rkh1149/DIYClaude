@@ -1,6 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import OpenAI from "openai";
-import { sql, getOwnedProject, saveDeliverable } from "@/lib/db";
+import { sql, getOwnedProject, saveDeliverable, getAttachments } from "@/lib/db";
 import { projectContext, SYSTEM_PROMPT, TYPE_PROMPTS } from "@/lib/prompts";
 import { ALL_TYPES } from "@/lib/catalog";
 
@@ -20,7 +20,8 @@ export async function POST(req, { params }) {
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const model = process.env.OPENAI_MODEL || "gpt-4o";
-  const context = projectContext(project);
+  const attachments = await getAttachments(id, { includeData: true });
+  const context = projectContext(project, attachments);
 
   // If the user gave regeneration instructions, include them (plus the
   // previous version, when available) so the new output incorporates them.
@@ -47,7 +48,8 @@ export async function POST(req, { params }) {
       return await generateContractors(openai, model, context, id, revision);
     }
     if (type === "design") {
-      return await generateDesign(openai, model, context, id, project, revision, userInstructions);
+      const photo = attachments.find((a) => a.kind === "image");
+      return await generateDesign(openai, model, context, id, project, revision, userInstructions, photo);
     }
 
     let userContent = `${context}\n\nTASK:\n${TYPE_PROMPTS[type]}`;
@@ -148,19 +150,30 @@ async function generateContractors(openai, model, context, projectId, revision =
   return Response.json({ content });
 }
 
-async function generateDesign(openai, model, context, projectId, project, revision = "", userInstructions = "") {
-  // 1) Written design spec
+async function generateDesign(openai, model, context, projectId, project, revision = "", userInstructions = "", photo = null) {
+  // 1) Written design spec — grounded in the homeowner's photo when available
+  const specText = `${context}\n\nTASK:\n${TYPE_PROMPTS.design}${revision}${
+    photo ? "\n\nA photo of the actual existing space is attached. Ground the design in what you can see: work with the real dimensions, constraints, and surroundings." : ""
+  }`;
+  const userMessage = photo
+    ? {
+        role: "user",
+        content: [
+          { type: "text", text: specText },
+          { type: "image_url", image_url: { url: `data:${photo.mime};base64,${photo.data}` } },
+        ],
+      }
+    : { role: "user", content: specText };
+
   const completion = await openai.chat.completions.create({
     model,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: `${context}\n\nTASK:\n${TYPE_PROMPTS.design}${revision}` },
-    ],
+    messages: [{ role: "system", content: SYSTEM_PROMPT }, userMessage],
   });
   const content = completion.choices[0].message.content;
 
   // 2) Photorealistic renders
-  const imagePrompt = `Photorealistic photograph of this completed home improvement project, professionally built, magazine quality, natural lighting: ${project.title}. ${project.description}${userInstructions ? `. Important design direction: ${userInstructions}` : ""}`.slice(0, 3000);
+  const photoDetails = photo?.summary ? ` Existing space details: ${photo.summary}` : "";
+  const imagePrompt = `Photorealistic photograph of this completed home improvement project, professionally built, magazine quality, natural lighting: ${project.title}. ${project.description}${userInstructions ? `. Important design direction: ${userInstructions}` : ""}${photoDetails}`.slice(0, 3000);
   const images = [];
   try {
     const result = await openai.images.generate({

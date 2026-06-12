@@ -1,6 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import OpenAI from "openai";
-import { sql, getOwnedProject } from "@/lib/db";
+import { sql, getOwnedProject, getAttachments } from "@/lib/db";
 import { projectContext } from "@/lib/prompts";
 
 export const maxDuration = 120;
@@ -29,7 +29,7 @@ export async function POST(req, { params }) {
         content:
           "You are an expert contractor scoping a homeowner's DIY project. Ask the 4-6 clarifying questions whose answers most change the plan, materials, cost, or design (dimensions, existing conditions, style preferences, constraints). Don't ask about things already answered in the context. Return ONLY JSON: {\"questions\":[{\"question\":\"...\",\"hint\":\"short example answer or guidance\"}]}",
       },
-      { role: "user", content: projectContext(project) },
+      { role: "user", content: projectContext(project, await getAttachments(id, { includeData: true })) },
     ],
   });
 

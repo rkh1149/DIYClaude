@@ -3,6 +3,27 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+// Resize/compress an image in the browser so it stores & analyzes cheaply.
+async function imageToBase64(file, maxDim = 1600) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+  return { base64: dataUrl.split(",")[1], mime: "image/jpeg" };
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 const SKILL_LEVELS = ["Beginner", "Some experience", "Confident DIYer", "Advanced / trade experience"];
 const BUDGETS = ["Under $500", "$500 – $2,000", "$2,000 – $10,000", "$10,000 – $50,000", "Over $50,000", "Not sure yet"];
 const TIMELINES = ["A weekend", "A few weekends", "1–3 months", "3+ months", "No deadline"];
@@ -17,16 +38,32 @@ export default function NewProjectPage() {
     budgetRange: "",
     timeline: "",
   });
+  const [photo, setPhoto] = useState(null); // File
+  const [doc, setDoc] = useState(null); // File
   const [submitting, setSubmitting] = useState(false);
+  const [status, setStatus] = useState("");
   const [error, setError] = useState("");
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  async function uploadAttachment(projectId, kind, filename, mime, dataBase64) {
+    const res = await fetch(`/api/projects/${projectId}/attachments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, filename, mime, dataBase64 }),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || `Failed to upload ${filename}`);
+    }
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
     setSubmitting(true);
     try {
+      setStatus("Creating project…");
       const res = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -34,10 +71,28 @@ export default function NewProjectPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Something went wrong.");
+
+      try {
+        if (photo) {
+          setStatus("Uploading photo…");
+          const { base64, mime } = await imageToBase64(photo);
+          await uploadAttachment(data.id, "image", photo.name, mime, base64);
+        }
+        if (doc) {
+          setStatus("Uploading document…");
+          const base64 = await fileToBase64(doc);
+          await uploadAttachment(data.id, "document", doc.name, doc.type || "text/plain", base64);
+        }
+      } catch (upErr) {
+        // Attachments are optional — continue, but let the user know.
+        alert(`Note: ${upErr.message}. The project was still created; you can continue without the attachment.`);
+      }
+
       router.push(`/projects/${data.id}`);
     } catch (err) {
       setError(err.message);
       setSubmitting(false);
+      setStatus("");
     }
   }
 
@@ -123,6 +178,44 @@ export default function NewProjectPage() {
           </div>
         </div>
 
+        <div className="rounded-xl border border-stone-200 bg-white p-4">
+          <h2 className="font-medium">Attachments <span className="text-sm font-normal text-stone-400">(optional)</span></h2>
+          <p className="mt-1 text-sm text-stone-500">
+            Add a photo of the space and/or a document (plans, inspiration, quotes). The AI will study
+            them and use the details in every deliverable.
+          </p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium">Photo of the space/project</label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setPhoto(e.target.files?.[0] || null)}
+                className="mt-1 w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-stone-100 file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-stone-200"
+              />
+              {photo && <p className="mt-1 truncate text-xs text-stone-500">{photo.name}</p>}
+            </div>
+            <div>
+              <label className="block text-sm font-medium">Document <span className="font-normal text-stone-400">(PDF preferred, or TXT/MD · max 3MB)</span></label>
+              <input
+                type="file"
+                accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] || null;
+                  if (f && f.size > 3 * 1024 * 1024) {
+                    alert("Document is over 3MB. Please use a smaller file.");
+                    e.target.value = "";
+                    return;
+                  }
+                  setDoc(f);
+                }}
+                className="mt-1 w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-stone-100 file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-stone-200"
+              />
+              {doc && <p className="mt-1 truncate text-xs text-stone-500">{doc.name}</p>}
+            </div>
+          </div>
+        </div>
+
         {error && <p className="text-sm text-red-600">{error}</p>}
 
         <button
@@ -130,7 +223,7 @@ export default function NewProjectPage() {
           disabled={submitting}
           className="w-full rounded-lg bg-amber-600 px-5 py-3 font-semibold text-white hover:bg-amber-500 disabled:opacity-50"
         >
-          {submitting ? "Creating…" : "Continue to clarifying questions"}
+          {submitting ? status || "Creating…" : "Continue to clarifying questions"}
         </button>
       </form>
     </main>
