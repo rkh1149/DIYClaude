@@ -48,8 +48,8 @@ export async function POST(req, { params }) {
       return await generateContractors(openai, model, context, id, revision);
     }
     if (type === "design") {
-      const photo = attachments.find((a) => a.kind === "image");
-      return await generateDesign(openai, model, context, id, project, revision, userInstructions, photo);
+      const photos = attachments.filter((a) => a.kind === "image");
+      return await generateDesign(openai, model, context, id, project, revision, userInstructions, photos);
     }
 
     let userContent = `${context}\n\nTASK:\n${TYPE_PROMPTS[type]}`;
@@ -150,17 +150,23 @@ async function generateContractors(openai, model, context, projectId, revision =
   return Response.json({ content });
 }
 
-async function generateDesign(openai, model, context, projectId, project, revision = "", userInstructions = "", photo = null) {
-  // 1) Written design spec — grounded in the homeowner's photo when available
+async function generateDesign(openai, model, context, projectId, project, revision = "", userInstructions = "", photos = []) {
+  // 1) Written design spec — grounded in the homeowner's photos when available
+  const visionPhotos = photos.slice(0, 6); // cap to keep the request reasonable
   const specText = `${context}\n\nTASK:\n${TYPE_PROMPTS.design}${revision}${
-    photo ? "\n\nA photo of the actual existing space is attached. Ground the design in what you can see: work with the real dimensions, constraints, and surroundings." : ""
+    visionPhotos.length
+      ? `\n\n${visionPhotos.length} photo(s) of the actual existing space/project are attached. Ground the design in what you can see: work with the real dimensions, constraints, and surroundings.`
+      : ""
   }`;
-  const userMessage = photo
+  const userMessage = visionPhotos.length
     ? {
         role: "user",
         content: [
           { type: "text", text: specText },
-          { type: "image_url", image_url: { url: `data:${photo.mime};base64,${photo.data}` } },
+          ...visionPhotos.map((p) => ({
+            type: "image_url",
+            image_url: { url: `data:${p.mime};base64,${p.data}` },
+          })),
         ],
       }
     : { role: "user", content: specText };
@@ -172,7 +178,8 @@ async function generateDesign(openai, model, context, projectId, project, revisi
   const content = completion.choices[0].message.content;
 
   // 2) Photorealistic renders
-  const photoDetails = photo?.summary ? ` Existing space details: ${photo.summary}` : "";
+  const summaries = photos.map((p) => p.summary).filter(Boolean).join(" ").slice(0, 1500);
+  const photoDetails = summaries ? ` Existing space details: ${summaries}` : "";
   const imagePrompt = `Photorealistic photograph of this completed home improvement project, professionally built, magazine quality, natural lighting: ${project.title}. ${project.description}${userInstructions ? `. Important design direction: ${userInstructions}` : ""}${photoDetails}`.slice(0, 3000);
   const images = [];
   try {

@@ -38,16 +38,33 @@ export default function NewProjectPage() {
     budgetRange: "",
     timeline: "",
   });
-  const [photo, setPhoto] = useState(null); // File
-  const [photoPreview, setPhotoPreview] = useState(null);
-  const [doc, setDoc] = useState(null); // File
+  const [photos, setPhotos] = useState([]); // [{ file, preview }]
+  const [docs, setDocs] = useState([]); // [File]
   const fileInputRef = useRef(null);
   const photosInputRef = useRef(null);
 
-  function selectPhoto(file) {
-    if (photoPreview) URL.revokeObjectURL(photoPreview);
-    setPhoto(file);
-    setPhotoPreview(file ? URL.createObjectURL(file) : null);
+  function addPhotos(fileList) {
+    const files = Array.from(fileList || []);
+    setPhotos((p) => [...p, ...files.map((f) => ({ file: f, preview: URL.createObjectURL(f) }))]);
+  }
+  function removePhoto(i) {
+    setPhotos((p) => {
+      URL.revokeObjectURL(p[i].preview);
+      return p.filter((_, idx) => idx !== i);
+    });
+  }
+  function addDocs(fileList) {
+    const files = Array.from(fileList || []).filter((f) => {
+      if (f.size > 3 * 1024 * 1024) {
+        alert(`${f.name} is over 3MB and was skipped. Please use a smaller file.`);
+        return false;
+      }
+      return true;
+    });
+    setDocs((d) => [...d, ...files]);
+  }
+  function removeDoc(i) {
+    setDocs((d) => d.filter((_, idx) => idx !== i));
   }
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState("");
@@ -82,19 +99,19 @@ export default function NewProjectPage() {
       if (!res.ok) throw new Error(data.error || "Something went wrong.");
 
       try {
-        if (photo) {
-          setStatus("Uploading photo…");
-          const { base64, mime } = await imageToBase64(photo);
-          await uploadAttachment(data.id, "image", photo.name, mime, base64);
+        for (let i = 0; i < photos.length; i++) {
+          setStatus(`Uploading photo ${i + 1} of ${photos.length}…`);
+          const { base64, mime } = await imageToBase64(photos[i].file);
+          await uploadAttachment(data.id, "image", photos[i].file.name, mime, base64);
         }
-        if (doc) {
-          setStatus("Uploading document…");
-          const base64 = await fileToBase64(doc);
-          await uploadAttachment(data.id, "document", doc.name, doc.type || "text/plain", base64);
+        for (let i = 0; i < docs.length; i++) {
+          setStatus(`Uploading document ${i + 1} of ${docs.length}…`);
+          const base64 = await fileToBase64(docs[i]);
+          await uploadAttachment(data.id, "document", docs[i].name, docs[i].type || "text/plain", base64);
         }
       } catch (upErr) {
         // Attachments are optional — continue, but let the user know.
-        alert(`Note: ${upErr.message}. The project was still created; you can continue without the attachment.`);
+        alert(`Note: ${upErr.message}. The project was still created; any remaining attachments were skipped.`);
       }
 
       router.push(`/projects/${data.id}`);
@@ -190,19 +207,19 @@ export default function NewProjectPage() {
         <div className="rounded-xl border border-stone-200 bg-white p-4">
           <h2 className="font-medium">Attachments <span className="text-sm font-normal text-stone-400">(optional)</span></h2>
           <p className="mt-1 text-sm text-stone-500">
-            Add a photo of the space and/or a document (plans, inspiration, quotes). The AI will study
-            them and use the details in every deliverable.
+            Add photos of the space and/or documents (plans, inspiration, quotes) — up to 12 total.
+            The AI will study each one and use the details in every deliverable.
           </p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-sm font-medium">Photo of the space/project</label>
+              <label className="block text-sm font-medium">Photos of the space/project</label>
               <div className="mt-1 flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="rounded-lg bg-stone-100 px-3 py-1.5 text-sm font-medium hover:bg-stone-200"
                 >
-                  Choose File
+                  Choose Files
                 </button>
                 <button
                   type="button"
@@ -218,8 +235,9 @@ export default function NewProjectPage() {
                 ref={fileInputRef}
                 type="file"
                 accept="image/*"
+                multiple
                 className="hidden"
-                onChange={(e) => selectPhoto(e.target.files?.[0] || null)}
+                onChange={(e) => { addPhotos(e.target.files); e.target.value = ""; }}
               />
               {/* Camera-first picker for phones/tablets; falls back to a file dialog on computers. */}
               <input
@@ -228,50 +246,61 @@ export default function NewProjectPage() {
                 accept="image/*"
                 capture="environment"
                 className="hidden"
-                onChange={(e) => selectPhoto(e.target.files?.[0] || null)}
+                onChange={(e) => { addPhotos(e.target.files); e.target.value = ""; }}
               />
-              {photo && (
-                <div className="mt-2 flex items-center gap-2">
-                  {photoPreview && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={photoPreview}
-                      alt="Selected photo"
-                      className="h-14 w-14 rounded-md border border-stone-200 object-cover"
-                    />
-                  )}
-                  <span className="min-w-0 truncate text-xs text-stone-500">{photo.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => selectPhoto(null)}
-                    className="text-xs text-red-500 hover:underline"
-                  >
-                    Remove
-                  </button>
-                </div>
+              {photos.length > 0 && (
+                <ul className="mt-2 space-y-1.5">
+                  {photos.map((p, i) => (
+                    <li key={p.preview} className="flex items-center gap-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={p.preview}
+                        alt={p.file.name}
+                        className="h-12 w-12 rounded-md border border-stone-200 object-cover"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-xs text-stone-500">{p.file.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => removePhoto(i)}
+                        className="text-xs text-red-500 hover:underline"
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               )}
               <p className="mt-1 text-xs text-stone-400">
-                On phones and iPads, either button can use your Photos library or camera. On a Mac,
-                the Photos library appears in the file dialog sidebar under Media.
+                Add as many as you need. On phones and iPads, either button can use your Photos
+                library or camera. On a Mac, the Photos library appears in the file dialog sidebar
+                under Media.
               </p>
             </div>
             <div>
-              <label className="block text-sm font-medium">Document <span className="font-normal text-stone-400">(PDF preferred, or TXT/MD · max 3MB)</span></label>
+              <label className="block text-sm font-medium">Documents <span className="font-normal text-stone-400">(PDF preferred, or TXT/MD · max 3MB each)</span></label>
               <input
                 type="file"
                 accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
-                onChange={(e) => {
-                  const f = e.target.files?.[0] || null;
-                  if (f && f.size > 3 * 1024 * 1024) {
-                    alert("Document is over 3MB. Please use a smaller file.");
-                    e.target.value = "";
-                    return;
-                  }
-                  setDoc(f);
-                }}
+                multiple
+                onChange={(e) => { addDocs(e.target.files); e.target.value = ""; }}
                 className="mt-1 w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-stone-100 file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-stone-200"
               />
-              {doc && <p className="mt-1 truncate text-xs text-stone-500">{doc.name}</p>}
+              {docs.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {docs.map((d, i) => (
+                    <li key={`${d.name}-${i}`} className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-xs text-stone-500">📄 {d.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeDoc(i)}
+                        className="text-xs text-red-500 hover:underline"
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         </div>

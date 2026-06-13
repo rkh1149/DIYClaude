@@ -176,7 +176,7 @@ function ClarifyView({ id, project, attachments, onDone }) {
                 )}
                 <div className="min-w-0 flex-1">
                   <label className="block text-sm font-medium">
-                    {a.kind === "image" ? "DIY details from your photo" : `Summary of ${a.filename}`}
+                    {a.kind === "image" ? `DIY details from ${a.filename}` : `Summary of ${a.filename}`}
                   </label>
                   {analyzing && !summaries[a.id] ? (
                     <p className="mt-2 text-sm text-stone-500">

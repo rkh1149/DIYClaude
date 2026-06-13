@@ -22,13 +22,14 @@ export async function POST(req, { params }) {
     return Response.json({ error: "File too large (max ~3MB)." }, { status: 413 });
   }
 
+  const { rows } = await sql`SELECT COUNT(*)::int AS n FROM attachments WHERE project_id = ${id}`;
+  if (rows[0].n >= 12) {
+    return Response.json({ error: "Attachment limit reached (12 per project)." }, { status: 400 });
+  }
+
   await sql`
     INSERT INTO attachments (project_id, kind, filename, mime, data, summary, user_verified)
-    VALUES (${id}, ${kind}, ${filename}, ${mime}, ${dataBase64}, '', false)
-    ON CONFLICT (project_id, kind)
-    DO UPDATE SET filename = EXCLUDED.filename, mime = EXCLUDED.mime,
-                  data = EXCLUDED.data, summary = '', user_verified = false,
-                  created_at = now()`;
+    VALUES (${id}, ${kind}, ${filename}, ${mime}, ${dataBase64}, '', false)`;
   return Response.json({ ok: true });
 }
 

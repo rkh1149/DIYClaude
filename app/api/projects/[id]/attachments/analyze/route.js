@@ -2,7 +2,7 @@ import { auth } from "@clerk/nextjs/server";
 import OpenAI from "openai";
 import { sql, getOwnedProject, getAttachments } from "@/lib/db";
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 const IMAGE_PROMPT = `You are an expert contractor reviewing a homeowner's photo for a DIY project. Describe everything DIY-relevant you can see: the space and existing conditions, visible materials and their apparent condition, approximate dimensions you can infer (state they are estimates), problems or constraints visible (damage, wiring, plumbing, access, slope), and anything that affects planning, cost, or safety. Be concise and factual — 1-3 short paragraphs. If something is ambiguous, say so rather than guessing.`;
 
