@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 // Resize/compress an image in the browser so it stores & analyzes cheaply.
@@ -39,7 +39,16 @@ export default function NewProjectPage() {
     timeline: "",
   });
   const [photo, setPhoto] = useState(null); // File
+  const [photoPreview, setPhotoPreview] = useState(null);
   const [doc, setDoc] = useState(null); // File
+  const fileInputRef = useRef(null);
+  const photosInputRef = useRef(null);
+
+  function selectPhoto(file) {
+    if (photoPreview) URL.revokeObjectURL(photoPreview);
+    setPhoto(file);
+    setPhotoPreview(file ? URL.createObjectURL(file) : null);
+  }
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -187,13 +196,64 @@ export default function NewProjectPage() {
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-sm font-medium">Photo of the space/project</label>
+              <div className="mt-1 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-lg bg-stone-100 px-3 py-1.5 text-sm font-medium hover:bg-stone-200"
+                >
+                  Choose File
+                </button>
+                <button
+                  type="button"
+                  onClick={() => photosInputRef.current?.click()}
+                  className="rounded-lg bg-stone-100 px-3 py-1.5 text-sm font-medium hover:bg-stone-200"
+                >
+                  Photos / Camera
+                </button>
+              </div>
+              {/* Standard picker: on phones/tablets this offers Photo Library, Camera, and Files;
+                  on Mac the dialog sidebar includes the Photos library under Media. */}
               <input
+                ref={fileInputRef}
                 type="file"
                 accept="image/*"
-                onChange={(e) => setPhoto(e.target.files?.[0] || null)}
-                className="mt-1 w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-stone-100 file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-stone-200"
+                className="hidden"
+                onChange={(e) => selectPhoto(e.target.files?.[0] || null)}
               />
-              {photo && <p className="mt-1 truncate text-xs text-stone-500">{photo.name}</p>}
+              {/* Camera-first picker for phones/tablets; falls back to a file dialog on computers. */}
+              <input
+                ref={photosInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(e) => selectPhoto(e.target.files?.[0] || null)}
+              />
+              {photo && (
+                <div className="mt-2 flex items-center gap-2">
+                  {photoPreview && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={photoPreview}
+                      alt="Selected photo"
+                      className="h-14 w-14 rounded-md border border-stone-200 object-cover"
+                    />
+                  )}
+                  <span className="min-w-0 truncate text-xs text-stone-500">{photo.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => selectPhoto(null)}
+                    className="text-xs text-red-500 hover:underline"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+              <p className="mt-1 text-xs text-stone-400">
+                On phones and iPads, either button can use your Photos library or camera. On a Mac,
+                the Photos library appears in the file dialog sidebar under Media.
+              </p>
             </div>
             <div>
               <label className="block text-sm font-medium">Document <span className="font-normal text-stone-400">(PDF preferred, or TXT/MD · max 3MB)</span></label>
