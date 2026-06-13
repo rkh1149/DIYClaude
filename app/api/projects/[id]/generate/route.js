@@ -183,6 +183,32 @@ async function verifyContractorLinks(markdown) {
   };
 }
 
+// Pull the actual URLs the web search visited (citation annotations) — these are
+// real, not model-recalled, so they're the most trustworthy links we have.
+function extractCitations(response) {
+  const seen = new Map();
+  for (const item of response.output || []) {
+    if (item.type !== "message") continue;
+    for (const part of item.content || []) {
+      for (const a of part.annotations || []) {
+        if (a.type === "url_citation" && a.url) {
+          const url = a.url.replace(/[?&]utm_source=[^&\s]+/g, "");
+          if (!seen.has(url)) seen.set(url, a.title || "");
+        }
+      }
+    }
+  }
+  return [...seen.entries()].map(([url, title]) => ({ url, title }));
+}
+
+function appendCitations(content, response) {
+  const cites = extractCitations(response).slice(0, 15);
+  if (!cites.length) return content;
+  return `${content}\n\n## Pages found during the search\n\nThese are the actual pages the web search visited while compiling this list:\n\n${cites
+    .map((c) => `- [${c.title || c.url}](${c.url})`)
+    .join("\n")}`;
+}
+
 async function generateContractors(openai, model, context, projectId, revision = "") {
   const input = `${SYSTEM_PROMPT}\n\n${context}\n\nTASK:\n${TYPE_PROMPTS.contractors}${revision}`;
   let content;
@@ -192,7 +218,7 @@ async function generateContractors(openai, model, context, projectId, revision =
       tools: [{ type: "web_search" }],
       input,
     });
-    content = response.output_text;
+    content = appendCitations(response.output_text, response);
   } catch (e1) {
     try {
       // Older API naming
@@ -201,7 +227,7 @@ async function generateContractors(openai, model, context, projectId, revision =
         tools: [{ type: "web_search_preview" }],
         input,
       });
-      content = response.output_text;
+      content = appendCitations(response.output_text, response);
     } catch (e2) {
       // Fallback: no live search — give guidance + directory links instead
       const completion = await openai.chat.completions.create({
