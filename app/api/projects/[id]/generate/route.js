@@ -5,6 +5,7 @@ import { projectContext, SYSTEM_PROMPT, TYPE_PROMPTS } from "@/lib/prompts";
 import { ALL_TYPES } from "@/lib/catalog";
 import { verifyContractorLinks } from "@/lib/links";
 import { runContractorAgent } from "@/lib/contractorAgent";
+import { resolveLocation } from "@/lib/location";
 
 export const maxDuration = 300;
 
@@ -47,7 +48,7 @@ export async function POST(req, { params }) {
       return await generateBudget(openai, model, context, id, revision);
     }
     if (type === "contractors") {
-      return await generateContractors(openai, model, context, id, revision);
+      return await generateContractors(openai, model, context, id, revision, project.zip_code);
     }
     if (type === "design") {
       const photos = attachments.filter((a) => a.kind === "image");
@@ -142,12 +143,15 @@ function appendCitations(content, response) {
     .join("\n")}`;
 }
 
-async function generateContractors(openai, model, context, projectId, revision = "") {
+async function generateContractors(openai, model, context, projectId, revision = "", zipCode = "") {
+  // Resolve the ZIP/postal code to a real city + coordinates so searches are
+  // anchored to a place, not a code. Fails soft to code-only searching.
+  const location = await resolveLocation(zipCode);
   let content;
   try {
     // Primary path: agent loop — searches, verifies every link with a tool,
     // and re-searches for replacements when a link is dead.
-    content = await runContractorAgent(model, context, revision);
+    content = await runContractorAgent(model, context, revision, location);
   } catch (agentErr) {
     console.error("contractor agent failed, falling back to single-shot search:", agentErr);
     const input = `${SYSTEM_PROMPT}\n\n${context}\n\nTASK:\n${TYPE_PROMPTS.contractors}${revision}`;
