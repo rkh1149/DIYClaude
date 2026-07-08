@@ -3,6 +3,8 @@ import OpenAI from "openai";
 import { sql, getOwnedProject, saveDeliverable, getAttachments } from "@/lib/db";
 import { projectContext, SYSTEM_PROMPT, TYPE_PROMPTS } from "@/lib/prompts";
 import { ALL_TYPES } from "@/lib/catalog";
+import { verifyContractorLinks } from "@/lib/links";
+import { runContractorAgent } from "@/lib/contractorAgent";
 
 export const maxDuration = 300;
 
@@ -112,76 +114,7 @@ async function generateBudget(openai, model, context, projectId, revision = "") 
   return Response.json({ content: "", budgetItems });
 }
 
-/* ---------------- Contractor link verification ---------------- */
-
-// Directory/search sites with stable URL patterns — never stripped, never checked
-// (they often block automated requests, which would cause false "dead" results).
-const TRUSTED_HOSTS = [
-  "google.com", "yelp.com", "angi.com", "homestars.com", "youtube.com",
-  "bbb.org", "houzz.com", "thumbtack.com", "homedepot.com", "lowes.com",
-];
-
-function isTrustedHost(url) {
-  try {
-    const h = new URL(url).hostname.replace(/^www\./, "");
-    return TRUSTED_HOSTS.some((t) => h === t || h.endsWith(`.${t}`));
-  } catch {
-    return true; // unparseable — leave it alone rather than mangle text
-  }
-}
-
-async function isReachable(url) {
-  const attempt = async (method) => {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 5000);
-    try {
-      return await fetch(url, {
-        method,
-        redirect: "follow",
-        signal: ctrl.signal,
-        headers: { "User-Agent": "Mozilla/5.0 (compatible; FamilyDIYPlanner/1.0)" },
-      });
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-  let res = await attempt("HEAD");
-  if (!res || (res.status >= 400 && res.status !== 401 && res.status !== 403 && res.status !== 406 && res.status !== 429)) {
-    res = await attempt("GET");
-  }
-  if (!res) return false;
-  // Any response < 400 is good. Bot-blocking statuses still prove the site exists.
-  return res.status < 400 || [401, 403, 405, 406, 429].includes(res.status);
-}
-
-async function verifyContractorLinks(markdown) {
-  const all = [...new Set((markdown.match(/https?:\/\/[^\s)\]"'<>]+/g) || []).map((u) => u.replace(/[.,;:!?]+$/, "")))];
-  const toCheck = all.filter((u) => !isTrustedHost(u)).slice(0, 20);
-  const dead = new Set();
-  await Promise.all(
-    toCheck.map(async (u) => {
-      if (!(await isReachable(u))) dead.add(u);
-    })
-  );
-  if (!dead.size) {
-    return { markdown: `${markdown}\n\n---\n*All contractor website links were checked and reachable as of ${new Date().toLocaleDateString()}.*`, removed: 0 };
-  }
-  // Markdown links: keep the business name, drop the dead URL.
-  let out = markdown.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (m, text, url) => {
-    const clean = url.replace(/[.,;:!?]+$/, "");
-    return dead.has(clean) ? `${text} *(website unreachable — search the business name instead)*` : m;
-  });
-  // Bare dead URLs.
-  for (const u of dead) {
-    out = out.split(u).join("*(unreachable link removed)*");
-  }
-  return {
-    markdown: `${out}\n\n---\n*Links were checked on ${new Date().toLocaleDateString()}; ${dead.size} unreachable link(s) were removed. A reachable website doesn't guarantee a business is reputable or still operating — always verify recent reviews.*`,
-    removed: dead.size,
-  };
-}
+/* ---------------- Contractors ---------------- */
 
 // Pull the actual URLs the web search visited (citation annotations) — these are
 // real, not model-recalled, so they're the most trustworthy links we have.
@@ -210,21 +143,18 @@ function appendCitations(content, response) {
 }
 
 async function generateContractors(openai, model, context, projectId, revision = "") {
-  const input = `${SYSTEM_PROMPT}\n\n${context}\n\nTASK:\n${TYPE_PROMPTS.contractors}${revision}`;
   let content;
   try {
-    const response = await openai.responses.create({
-      model,
-      tools: [{ type: "web_search" }],
-      input,
-    });
-    content = appendCitations(response.output_text, response);
-  } catch (e1) {
+    // Primary path: agent loop — searches, verifies every link with a tool,
+    // and re-searches for replacements when a link is dead.
+    content = await runContractorAgent(model, context, revision);
+  } catch (agentErr) {
+    console.error("contractor agent failed, falling back to single-shot search:", agentErr);
+    const input = `${SYSTEM_PROMPT}\n\n${context}\n\nTASK:\n${TYPE_PROMPTS.contractors}${revision}`;
     try {
-      // Older API naming
       const response = await openai.responses.create({
         model,
-        tools: [{ type: "web_search_preview" }],
+        tools: [{ type: "web_search" }],
         input,
       });
       content = appendCitations(response.output_text, response);
