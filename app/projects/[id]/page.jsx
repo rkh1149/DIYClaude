@@ -452,7 +452,18 @@ function Workspace({ id, data, setData, router }) {
                   </div>
                 )}
                 <article className="prose prose-stone max-w-none prose-table:text-sm">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{current.content}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      a: ({ href, children, ...props }) => (
+                        <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+                          {children}
+                        </a>
+                      ),
+                    }}
+                  >
+                    {current.content}
+                  </ReactMarkdown>
                 </article>
               </>
             ) : (
